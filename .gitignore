@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.claude/
+
+# tài liệu cá nhân, không đưa lên GitHub
+không_push/
