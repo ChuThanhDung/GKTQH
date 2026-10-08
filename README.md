@@ -8,13 +8,13 @@ trên tập dữ liệu **IBM HR Employee Attrition** (1.470 nhân viên, 35 thu
 
 | Mục | Toán tử | Minh họa |
 | :--- | :--- | :--- |
-| 11.1.1 | Điều hướng (Navigation) | Pan, Zoom 2D; xoay 3D (Grand Tour) |
-| 11.1.2 | Lựa chọn & Brushing | Box/Lasso Select trực tiếp trên biểu đồ, thống kê và biểu đồ cột cập nhật theo vùng chọn |
+| 11.1.1 | Điều hướng (Navigation) | Grand Tour tự động (quỹ đạo chiếu 2D chạy liên tục, chỉnh kích thước bước); Pan, Zoom 2D; xoay 3D bằng tay ở phiên bản cũ |
+| 11.1.2 | Lựa chọn & Brushing | Box/Lasso Select trực tiếp trên biểu đồ, chọn mới thay thế hoặc cộng thêm vào lựa chọn cũ, thống kê và biểu đồ cột cập nhật theo vùng chọn |
 | 11.1.3 | Lọc dữ liệu (Filtering) | Loại bỏ hẳn các bản ghi không thỏa điều kiện |
 | 11.1.4 | Tái cấu hình & PCA | Đổi ánh xạ trục, giảm chiều bằng PCA |
 | 11.1.5 | Mã hóa đồ họa (Encoding) | Trước/Sau khi mã hóa màu và kích thước, so sánh dạng biểu đồ, so sánh bản đồ màu |
-| 11.1.6 | Khung nhìn kết nối | Chọn một nhóm, nhiều biểu đồ cùng được làm nổi bật |
-| 11.1.7 | Khái quát & Chi tiết | Overview + Detail |
+| 11.1.6 | Khung nhìn kết nối | Chọn một nhóm, nhiều biểu đồ cùng được làm nổi bật; có thể tách liên kết từng khung để làm mốc so sánh |
+| 11.1.7 | Khái quát & Chi tiết | Biến dạng Fisheye (tiêu điểm, phạm vi, mức phóng đại, 2 tiêu điểm); Overview + Detail ở phiên bản cũ |
 | 11.3 | Pipeline thống nhất | Lọc, PCA, Mã hóa, Hiển thị; bật/tắt từng bước |
 
 ## Yêu cầu

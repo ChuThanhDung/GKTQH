@@ -164,14 +164,135 @@ elif menu == "11.1.1  Điều hướng":
     <div class="theory-box">
         <strong>Lý thuyết:</strong><br>
         • <strong>Pan & Zoom:</strong> Thay đổi vị trí camera / mức chi tiết (LOD) mà không biến đổi dữ liệu.<br>
-        • <strong>Grand Tour (Asimov 1985):</strong> Chiếu liên tục dữ liệu đa chiều lên không gian con. Xoay 3D 360° = Grand Tour.
+        • <strong>Grand Tour (Asimov 1985):</strong> Tự động chiếu dữ liệu đa chiều xuống 2D dọc theo một quỹ đạo trơn qua nhiều góc nhìn; người dùng chỉnh kích thước bước (độ mượt so với số góc phải xem).
         <div class="uses"><strong>Thường dùng để:</strong> Tìm kiếm và khám phá dữ liệu: phóng to xem chi tiết một vùng, thu nhỏ để xem toàn cảnh, kéo (pan) để đổi vùng quan sát, xoay để nhìn dữ liệu đa chiều từ nhiều góc. Hữu ích khi dữ liệu quá lớn hoặc quá dày để đọc trong một khung nhìn.</div>
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["🔍 Pan & Zoom 2D", "🌐 Grand Tour 3D"])
+    tab1, tab2 = st.tabs(["🎬 Grand Tour tự động", "🔍 Pan & Zoom 2D"])
 
     with tab1:
+        st.subheader("Grand Tour: tự động duyệt qua nhiều góc chiếu 2D của dữ liệu nhiều chiều")
+        st.caption("Dữ liệu có nhiều thuộc tính (nhiều chiều) nên không vẽ trực tiếp lên 2D được. Grand Tour chọn một quỹ đạo trơn qua các phép chiếu 2D "
+                   "và chạy liên tục như một đoạn phim. Bấm ▶ Play bên dưới biểu đồ. Các mũi tên là hướng của từng thuộc tính trong khung nhìn hiện tại.")
+
+        GT_FEATURES = {
+            'Age': 'Tuổi', 'MonthlyIncome': 'Lương', 'TotalWorkingYears': 'Tổng năm làm việc',
+            'YearsAtCompany': 'Năm ở công ty', 'DistanceFromHome': 'Khoảng cách nhà',
+            'PercentSalaryHike': '% tăng lương', 'YearsInCurrentRole': 'Năm ở vị trí hiện tại',
+            'YearsSinceLastPromotion': 'Năm từ lần thăng chức', 'YearsWithCurrManager': 'Năm với quản lý',
+            'NumCompaniesWorked': 'Số công ty đã làm',
+        }
+        gt_feats = st.multiselect(
+            "Các chiều tham gia (chọn từ 3 trở lên):", list(GT_FEATURES), default=list(GT_FEATURES)[:7],
+            format_func=lambda k: GT_FEATURES[k], key="gt_feats")
+        g1, g2, g3 = st.columns(3)
+        gt_steps = g1.slider("Kích thước bước (số khung giữa 2 góc nhìn)", 8, 60, 30,
+                             help="Bước nhỏ = nhiều khung hơn, chuyển động mượt nhưng phải xem lâu. Bước lớn = nhanh nhưng dễ bỏ sót góc nhìn.")
+        gt_ways = g2.slider("Số góc nhìn mốc trên quỹ đạo", 3, 8, 5)
+        gt_speed = g3.slider("Thời gian mỗi khung (ms)", 20, 300, 60, step=10)
+        gt_seed = st.number_input("Hạt giống quỹ đạo (đổi để có quỹ đạo khác)", 0, 999, 7, key="gt_seed")
+
+        if len(gt_feats) < 3:
+            st.warning("Chọn ít nhất 3 chiều để có nhiều góc chiếu khác nhau.")
+        else:
+            @st.cache_data(show_spinner=False)
+            def grand_tour_frames(data_x, n_way, n_step, seed):
+                """Quỹ đạo kín qua các phép chiếu 2D: nội suy giữa các khung trực chuẩn rồi trực chuẩn hóa lại."""
+                rng = np.random.default_rng(seed)
+                d = data_x.shape[1]
+
+                def ortho(m):
+                    q, r = np.linalg.qr(m)
+                    return q * np.sign(np.diag(r))
+
+                marks = [ortho(rng.normal(size=(d, 2))) for _ in range(n_way)]
+                marks.append(marks[0])
+                frames = []
+                for a, b in zip(marks[:-1], marks[1:]):
+                    sgn = np.sign(np.diag(a.T @ b))
+                    sgn[sgn == 0] = 1
+                    b = b * sgn
+                    for t in np.linspace(0, 1, n_step, endpoint=False):
+                        frames.append(ortho((1 - t) * a + t * b))
+                return np.array(frames)
+
+            Xs = StandardScaler().fit_transform(df[gt_feats].values.astype(float))
+            frames_f = grand_tour_frames(Xs, gt_ways, gt_steps, int(gt_seed))
+            proj = np.einsum('nd,fdk->fnk', Xs, frames_f)
+            lim = float(np.abs(proj).max()) * 1.05
+            arrow_scale = lim * 0.55
+
+            is_yes = (df['Attrition'] == 'Yes').values
+            groups = [('Ở lại', ~is_yes, COLOR_NO), ('Nghỉ việc', is_yes, COLOR_YES)]
+            labels = [GT_FEATURES[k] for k in gt_feats]
+
+            def arrow_xy(fr):
+                ax_, ay_ = [], []
+                for i in range(len(gt_feats)):
+                    ax_ += [0.0, float(fr[i, 0]) * arrow_scale, None]
+                    ay_ += [0.0, float(fr[i, 1]) * arrow_scale, None]
+                return ax_, ay_
+
+            arrow_text = []
+            for lb in labels:
+                arrow_text += ['', lb, '']
+
+            def frame_traces(k):
+                out = [go.Scatter(x=np.round(proj[k][m, 0], 3), y=np.round(proj[k][m, 1], 3)) for _, m, _ in groups]
+                ax_, ay_ = arrow_xy(frames_f[k])
+                out.append(go.Scatter(x=ax_, y=ay_))
+                return out
+
+            ar0x, ar0y = arrow_xy(frames_f[0])
+            fig_gt = go.Figure(
+                data=[go.Scatter(x=np.round(proj[0][m, 0], 3), y=np.round(proj[0][m, 1], 3), mode='markers', name=nm,
+                                 marker=dict(color=col, size=5, opacity=0.55)) for nm, m, col in groups]
+                     + [go.Scatter(x=ar0x, y=ar0y, mode='lines+text',
+                                   text=arrow_text, textposition='top center', textfont=dict(size=11, color='#9a3412'),
+                                   line=dict(color='#f97316', width=2), showlegend=False, hoverinfo='skip')],
+                frames=[go.Frame(data=frame_traces(k), traces=[0, 1, 2], name=str(k)) for k in range(len(frames_f))])
+            fig_gt.update_layout(
+                template=PLOTLY_TEMPLATE, height=640,
+                xaxis=dict(range=[-lim, lim], zeroline=False, showticklabels=False, title="Chiều chiếu 1"),
+                yaxis=dict(range=[-lim, lim], zeroline=False, showticklabels=False, title="Chiều chiếu 2",
+                           scaleanchor="x", scaleratio=1),
+                legend=dict(orientation='h', y=1.06, x=0),
+                updatemenus=[dict(
+                    type='buttons', direction='left', x=0.0, y=-0.08, xanchor='left', yanchor='top',
+                    buttons=[
+                        dict(label='▶ Play', method='animate',
+                             args=[None, dict(frame=dict(duration=gt_speed, redraw=True), transition=dict(duration=0),
+                                              fromcurrent=True, mode='immediate')]),
+                        dict(label='⏸ Pause', method='animate',
+                             args=[[None], dict(frame=dict(duration=0, redraw=False), transition=dict(duration=0), mode='immediate')]),
+                    ])],
+                sliders=[dict(
+                    active=0, x=0.18, len=0.8, y=-0.05, currentvalue=dict(prefix='Khung: '),
+                    steps=[dict(method='animate', label=str(k),
+                                args=[[str(k)], dict(frame=dict(duration=0, redraw=True), transition=dict(duration=0), mode='immediate')])
+                           for k in range(len(frames_f))])])
+            st.plotly_chart(fig_gt, use_container_width=True)
+            st.info(f"🎞️ Quỹ đạo gồm **{len(frames_f)} khung** (nối vòng, chạy lặp lại). Nhìn kỹ: có những góc nhìn các điểm đỏ (nghỉ việc) "
+                    "tụ thành cụm, có góc thì lẫn vào các điểm xanh. Đó là lý do cần xem nhiều góc chiếu thay vì chỉ một. "
+                    "Nếu muốn máy tự chọn các góc đáng xem thì đó là *projection pursuit* (chấm điểm từng phép chiếu).")
+
+        with st.expander("📂 Xem phiên bản cũ (xoay 3D bằng tay)"):
+            c_x, c_y, c_z = st.columns(3)
+            num_opts = ['Age', 'MonthlyIncome', 'TotalWorkingYears', 'YearsAtCompany', 'DistanceFromHome', 'PercentSalaryHike']
+            x_ax = c_x.selectbox("Trục X:", num_opts, index=0)
+            y_ax = c_y.selectbox("Trục Y:", num_opts, index=1)
+            z_ax = c_z.selectbox("Trục Z:", num_opts, index=2)
+            fig3d = px.scatter_3d(
+                df, x=x_ax, y=y_ax, z=z_ax, color='Attrition',
+                color_discrete_map=COLOR_MAP_ATTRITION,
+                labels={'Attrition': 'Nghỉ việc'}, opacity=0.7, template=PLOTLY_TEMPLATE
+            )
+            fig3d.update_traces(marker=dict(size=4))
+            fig3d.update_layout(height=600, margin=dict(l=0, r=0, b=0, t=30))
+            st.plotly_chart(fig3d, use_container_width=True)
+
+    with tab2:
         st.subheader("Tuổi vs Thu nhập")
         st.caption("⬅️➡️ Giữ chuột kéo = Pan · 🔍 Cuộn chuột = Zoom")
         fig2d = px.scatter(
@@ -182,25 +303,6 @@ elif menu == "11.1.1  Điều hướng":
         )
         fig2d.update_layout(height=500, dragmode='pan')
         st.plotly_chart(fig2d, use_container_width=True, config={'scrollZoom': True})
-
-    with tab2:
-        st.subheader("Xoay 360° khám phá phân bố đa chiều")
-        st.caption("🖱️ Giữ chuột trái kéo xoay theo mọi hướng")
-        c_x, c_y, c_z = st.columns(3)
-        num_opts = ['Age', 'MonthlyIncome', 'TotalWorkingYears', 'YearsAtCompany', 'DistanceFromHome', 'PercentSalaryHike']
-        x_ax = c_x.selectbox("Trục X:", num_opts, index=0)
-        y_ax = c_y.selectbox("Trục Y:", num_opts, index=1)
-        z_ax = c_z.selectbox("Trục Z:", num_opts, index=2)
-
-        fig3d = px.scatter_3d(
-            df, x=x_ax, y=y_ax, z=z_ax, color='Attrition',
-            color_discrete_map=COLOR_MAP_ATTRITION,
-            labels={'Attrition': 'Nghỉ việc'}, opacity=0.7, template=PLOTLY_TEMPLATE
-        )
-        fig3d.update_traces(marker=dict(size=4))
-        fig3d.update_layout(height=600, margin=dict(l=0, r=0, b=0, t=30))
-        st.plotly_chart(fig3d, use_container_width=True)
-        st.success("🎯 Khi xoay 3D, các điểm đỏ (nghỉ việc) tập trung ở góc: **Tuổi trẻ, Lương thấp, Ít kinh nghiệm**.")
 
 # ==========================================
 # 2. LỰA CHỌN & BRUSHING (MỚI)
@@ -219,6 +321,17 @@ elif menu == "11.1.2  Lựa chọn & Brushing":
     st.subheader("Brushing trực tiếp trên biểu đồ")
     st.caption("🖱️ Chọn công cụ **Box Select** (⬜) hoặc **Lasso Select** (〰️) trên thanh công cụ biểu đồ, rồi kéo chuột khoanh vùng dữ liệu.")
 
+    sel_mode = st.radio(
+        "Khi khoanh vùng mới, kết quả cũ sẽ:",
+        ["Thay thế lựa chọn cũ", "Cộng thêm vào lựa chọn cũ"],
+        horizontal=True, key="sel_mode",
+        help="Câu hỏi thiết kế trong sách: lựa chọn mới nên thay thế hay bổ sung vào lựa chọn trước?"
+    )
+    add_mode = sel_mode.startswith("Cộng")
+    st.session_state.setdefault("sel_acc", [])
+    st.session_state.setdefault("sel_last", [])
+    st.session_state.setdefault("sel_reset", 0)
+
     fig_brush = go.Figure()
     fig_brush.add_trace(go.Scatter(
         x=df['Age'].values,
@@ -228,6 +341,7 @@ elif menu == "11.1.2  Lựa chọn & Brushing":
             color=[COLOR_YES if a == 'Yes' else COLOR_NO for a in df['Attrition']],
             size=6, opacity=0.7
         ),
+        selectedpoints=st.session_state["sel_acc"] if (add_mode and st.session_state["sel_acc"]) else None,
         selected=dict(marker=dict(opacity=1, size=10)),
         unselected=dict(marker=dict(opacity=0.12, size=4)),
         hovertemplate='Tuổi: %{x}<br>Lương: $%{y:,.0f}<extra></extra>'
@@ -241,13 +355,29 @@ elif menu == "11.1.2  Lựa chọn & Brushing":
     selected_indices = []
     try:
         event = st.plotly_chart(
-            fig_brush, on_select="rerun", key="brush_main", use_container_width=True
+            fig_brush, on_select="rerun", key=f"brush_main_{st.session_state['sel_reset']}",
+            use_container_width=True
         )
-        if event.selection and event.selection.point_indices:
-            selected_indices = event.selection.point_indices
+        current = sorted(event.selection.point_indices) if (event.selection and event.selection.point_indices) else []
+        if current != st.session_state["sel_last"]:
+            if add_mode:
+                if current:
+                    st.session_state["sel_acc"] = sorted(set(st.session_state["sel_acc"]) | set(current))
+            else:
+                st.session_state["sel_acc"] = current
+            st.session_state["sel_last"] = current
+        elif not add_mode and not current:
+            st.session_state["sel_acc"] = []
+        selected_indices = st.session_state["sel_acc"]
     except (TypeError, AttributeError):
         st.plotly_chart(fig_brush, use_container_width=True)
         st.warning("⚠️ Cần Streamlit ≥ 1.35 để dùng Linked Brushing. Cập nhật: `pip install -U streamlit`")
+
+    if st.button("🧹 Xóa lựa chọn"):
+        st.session_state["sel_acc"] = []
+        st.session_state["sel_last"] = []
+        st.session_state["sel_reset"] += 1
+        st.rerun()
 
     if selected_indices:
         sel_df = df.iloc[selected_indices]
@@ -616,6 +746,13 @@ elif menu == "11.1.6  Khung nhìn kết nối":
     )
     show_context = ctrl2.checkbox("Hiện điểm nền (Context)", value=True)
 
+    st.markdown("**Liên kết từng khung nhìn:** bỏ tick để *tách* khung đó khỏi bộ điều khiển; "
+                "khung bị tách giữ nguyên làm mốc so sánh (luôn highlight nhóm *Nghỉ việc*).")
+    lk1, lk2, lk3 = st.columns(3)
+    link1 = lk1.checkbox("🔗 Khung 1 nhận highlight", value=True)
+    link2 = lk2.checkbox("🔗 Khung 2 nhận highlight", value=True)
+    link3 = lk3.checkbox("🔗 Khung 3 nhận highlight", value=True)
+
     if highlight_group == "Nghỉ việc (Yes)":
         mask_hl = df['Attrition'] == 'Yes'
         hl_color = COLOR_YES
@@ -632,28 +769,36 @@ elif menu == "11.1.6  Khung nhìn kết nối":
     hl_df = df[mask_hl]
     bg_df = df[~mask_hl]
 
+    base_mask = df['Attrition'] == 'Yes'
+    base_hl, base_bg = df[base_mask], df[~base_mask]
+
+    def view_data(linked):
+        return (hl_df, bg_df, hl_color, "") if linked else (base_hl, base_bg, COLOR_YES, " (đã tách liên kết)")
+
     st.markdown(f"**Nhóm highlight:** {len(hl_df)} người · **Nền:** {len(bg_df)} người")
 
     c_v1, c_v2, c_v3 = st.columns(3)
 
     with c_v1:
+        v_hl, v_bg, v_col, v_tag = view_data(link1)
         fig_v1 = go.Figure()
         if show_context:
             fig_v1.add_trace(go.Scatter(
-                x=bg_df['Age'], y=bg_df['MonthlyIncome'], mode='markers',
+                x=v_bg['Age'], y=v_bg['MonthlyIncome'], mode='markers',
                 marker=dict(color='#e5e7eb', size=3, opacity=0.3), name='Nền', showlegend=False
             ))
         fig_v1.add_trace(go.Scatter(
-            x=hl_df['Age'], y=hl_df['MonthlyIncome'], mode='markers',
-            marker=dict(color=hl_color, size=5, opacity=0.8), name='Highlight', showlegend=False
+            x=v_hl['Age'], y=v_hl['MonthlyIncome'], mode='markers',
+            marker=dict(color=v_col, size=5, opacity=0.8), name='Highlight', showlegend=False
         ))
-        fig_v1.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 1: Tuổi × Lương",
+        fig_v1.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 1: Tuổi × Lương" + v_tag,
                              xaxis_title="Tuổi", yaxis_title="Lương ($)")
         st.plotly_chart(fig_v1, use_container_width=True)
 
     with c_v2:
+        v_hl, v_bg, v_col, v_tag = view_data(link2)
         dept_all = df['Department'].value_counts()
-        dept_hl = hl_df['Department'].value_counts().reindex(dept_all.index, fill_value=0)
+        dept_hl = v_hl['Department'].value_counts().reindex(dept_all.index, fill_value=0)
         fig_v2 = go.Figure()
         fig_v2.add_trace(go.Bar(
             x=dept_all.index, y=dept_all.values,
@@ -661,22 +806,23 @@ elif menu == "11.1.6  Khung nhìn kết nối":
         ))
         fig_v2.add_trace(go.Bar(
             x=dept_hl.index, y=dept_hl.values,
-            marker_color=hl_color, name='Highlight', showlegend=True
+            marker_color=v_col, name='Highlight', showlegend=True
         ))
-        fig_v2.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 2: Phòng ban",
+        fig_v2.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 2: Phòng ban" + v_tag,
                              barmode='overlay', yaxis_title="Số người")
         st.plotly_chart(fig_v2, use_container_width=True)
 
     with c_v3:
+        v_hl, v_bg, v_col, v_tag = view_data(link3)
         fig_v3 = go.Figure()
         if show_context:
             fig_v3.add_trace(go.Histogram(
-                x=bg_df['Age'], marker_color='#e5e7eb', nbinsx=20, name='Nền', showlegend=False
+                x=v_bg['Age'], marker_color='#e5e7eb', nbinsx=20, name='Nền', showlegend=False
             ))
         fig_v3.add_trace(go.Histogram(
-            x=hl_df['Age'], marker_color=hl_color, nbinsx=20, name='Highlight', opacity=0.8, showlegend=False
+            x=v_hl['Age'], marker_color=v_col, nbinsx=20, name='Highlight', opacity=0.8, showlegend=False
         ))
-        fig_v3.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 3: Phân bố tuổi",
+        fig_v3.update_layout(template=PLOTLY_TEMPLATE, height=380, title="Khung 3: Phân bố tuổi" + v_tag,
                              barmode='overlay', xaxis_title="Tuổi", yaxis_title="Số người")
         st.plotly_chart(fig_v3, use_container_width=True)
 
@@ -719,38 +865,124 @@ elif menu == "11.1.7  Khái quát & Chi tiết":
     </div>
     """, unsafe_allow_html=True)
 
-    st.subheader("Chọn vùng tuổi tiêu điểm:")
-    focus_age = st.slider("Cửa sổ tiêu điểm:", 18, 60, (25, 35))
-    focus_df = df[(df['Age'] >= focus_age[0]) & (df['Age'] <= focus_age[1])]
+    st.subheader("Biến dạng Fisheye: phóng to tiêu điểm, nén phần còn lại")
+    st.caption("Đây là kỹ thuật biến dạng (distortion) của mục 11.1.7: vùng quanh **tiêu điểm** được phóng to, phần ngoài **phạm vi** giữ nguyên, "
+               "nên bối cảnh không bị mất. Các trục không còn tuyến tính trong vùng phóng đại; xem giá trị thật khi rê chuột vào điểm.")
 
-    fig_od = make_subplots(
-        rows=2, cols=1, row_heights=[0.35, 0.65],
-        subplot_titles=[
-            f"OVERVIEW: Toàn cảnh 1,470 người (vùng cam: {focus_age[0]}–{focus_age[1]} tuổi)",
-            f"DETAIL: Phóng to {focus_age[0]}–{focus_age[1]} tuổi ({len(focus_df)} người)"
-        ]
-    )
+    c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+    fe_age = c_f1.slider("Tiêu điểm: Tuổi", 18, 60, 30)
+    fe_inc = c_f2.slider("Tiêu điểm: Lương ($)", 1000, 20000, 3000, step=500)
+    fe_rad = c_f3.slider("Phạm vi (bán kính)", 0.05, 0.60, 0.25, 0.01)
+    fe_mag = c_f4.slider("Mức phóng đại", 0.0, 8.0, 3.0, 0.5)
+    c_f5, c_f6 = st.columns(2)
+    fe_two = c_f5.checkbox("Thêm tiêu điểm thứ 2 (hòa trộn bằng hợp thành)", value=False)
+    fe_grid = c_f6.checkbox("Hiện lưới tham chiếu bị biến dạng", value=True)
+    if fe_two:
+        c_g1, c_g2 = st.columns(2)
+        fe_age2 = c_g1.slider("Tiêu điểm 2: Tuổi", 18, 60, 50)
+        fe_inc2 = c_g2.slider("Tiêu điểm 2: Lương ($)", 1000, 20000, 15000, step=500)
 
-    fig_od.add_trace(go.Scatter(
-        x=df['Age'], y=df['MonthlyIncome'], mode='markers',
-        marker=dict(color='#d1d5db', size=3, opacity=0.3), showlegend=False
-    ), row=1, col=1)
-    fig_od.add_vrect(
-        x0=focus_age[0], x1=focus_age[1],
-        fillcolor='#f97316', opacity=0.2, line_width=1.5, line_color='#f97316',
-        row=1, col=1
-    )
+    a_lo, a_hi = float(df['Age'].min()), float(df['Age'].max())
+    i_lo, i_hi = float(df['MonthlyIncome'].min()), float(df['MonthlyIncome'].max())
 
-    fig_od.add_trace(go.Scatter(
-        x=focus_df['Age'], y=focus_df['MonthlyIncome'], mode='markers',
-        marker=dict(
-            color=focus_df['Attrition'].map({'Yes': COLOR_YES, 'No': COLOR_NO}),
-            size=6, opacity=0.85
-        ), showlegend=False
-    ), row=2, col=1)
+    def to_unit(age, inc):
+        return (age - a_lo) / (a_hi - a_lo), (inc - i_lo) / (i_hi - i_lo)
 
-    fig_od.update_layout(template=PLOTLY_TEMPLATE, height=600)
-    st.plotly_chart(fig_od, use_container_width=True)
+    def fisheye(px, py, fx, fy, radius, mag):
+        dx, dy = px - fx, py - fy
+        r = np.hypot(dx, dy)
+        t = np.where(r < radius, r / radius, 1.0)
+        t_new = (mag + 1) * t / (mag * t + 1)
+        inside = (r > 0) & (r < radius)
+        scale = np.where(inside, t_new * radius / np.where(r > 0, r, 1.0), 1.0)
+        return fx + dx * scale, fy + dy * scale
+
+    foci = [to_unit(fe_age, fe_inc)]
+    if fe_two:
+        foci.append(to_unit(fe_age2, fe_inc2))
+
+    def distort(px, py):
+        for fx, fy in foci:
+            px, py = fisheye(px, py, fx, fy, fe_rad, fe_mag)
+        return px, py
+
+    ux, uy = to_unit(df['Age'].values.astype(float), df['MonthlyIncome'].values.astype(float))
+    dx_, dy_ = distort(ux, uy)
+    in_focus = np.zeros(len(df), dtype=bool)
+    for fx, fy in foci:
+        in_focus |= np.hypot(ux - fx, uy - fy) < fe_rad
+
+    fig_fe = go.Figure()
+    if fe_grid:
+        gx, gy = [], []
+        samples = np.linspace(0, 1, 80)
+        for age_line in range(20, 61, 10):
+            u, _ = to_unit(float(age_line), i_lo)
+            lx, ly = distort(np.full_like(samples, u), samples)
+            gx += list(lx) + [None]
+            gy += list(ly) + [None]
+        for inc_line in range(2500, 20001, 2500):
+            _, v = to_unit(a_lo, float(inc_line))
+            lx, ly = distort(samples, np.full_like(samples, v))
+            gx += list(lx) + [None]
+            gy += list(ly) + [None]
+        fig_fe.add_trace(go.Scatter(x=gx, y=gy, mode='lines', line=dict(color='#d6d3d1', width=1),
+                                    hoverinfo='skip', showlegend=False))
+    cd = np.stack([df['Age'].values, df['MonthlyIncome'].values], axis=1)
+    fig_fe.add_trace(go.Scatter(
+        x=dx_, y=dy_, mode='markers', customdata=cd,
+        marker=dict(color=[COLOR_YES if a == 'Yes' else COLOR_NO for a in df['Attrition']],
+                    size=np.where(in_focus, 6, 4), opacity=np.where(in_focus, 0.9, 0.45)),
+        hovertemplate='Tuổi: %{customdata[0]}<br>Lương: $%{customdata[1]:,.0f}<extra></extra>',
+        showlegend=False))
+    for fx, fy in foci:
+        fig_fe.add_shape(type='circle', x0=fx - fe_rad, x1=fx + fe_rad, y0=fy - fe_rad, y1=fy + fe_rad,
+                         line=dict(color='#f97316', width=2, dash='dash'))
+    fig_fe.update_layout(
+        template=PLOTLY_TEMPLATE, height=620,
+        title=f"Fisheye: {int(in_focus.sum())} / {len(df)} điểm nằm trong phạm vi tiêu điểm",
+        xaxis=dict(title="Tuổi (đã biến dạng)", range=[-0.03, 1.03], showticklabels=False, showgrid=False, zeroline=False),
+        yaxis=dict(title="Lương (đã biến dạng)", range=[-0.03, 1.03], showticklabels=False, showgrid=False,
+                   zeroline=False, scaleanchor="x", scaleratio=1))
+    st.plotly_chart(fig_fe, use_container_width=True)
+
+    st.info("🔧 **Ánh xạ sang 4 tham số của khuôn khổ 11.3:** *Tiêu điểm* = vị trí tâm vùng phóng đại · *Phạm vi* = bán kính vòng cam · "
+            "*Phép biến đổi* = hàm fisheye với mức phóng đại ở tâm (giảm dần ra rìa, liên tục tại biên) · "
+            "*Bộ hòa trộn* = khi có 2 tiêu điểm chồng nhau, các phép biến dạng được áp dụng lần lượt (hợp thành).")
+
+    with st.expander("📂 Xem phiên bản cũ (Overview + Detail)"):
+        st.subheader("Chọn vùng tuổi tiêu điểm:")
+        focus_age = st.slider("Cửa sổ tiêu điểm:", 18, 60, (25, 35))
+        focus_df = df[(df['Age'] >= focus_age[0]) & (df['Age'] <= focus_age[1])]
+
+        fig_od = make_subplots(
+            rows=2, cols=1, row_heights=[0.35, 0.65],
+            subplot_titles=[
+                f"OVERVIEW: Toàn cảnh 1,470 người (vùng cam: {focus_age[0]}–{focus_age[1]} tuổi)",
+                f"DETAIL: Phóng to {focus_age[0]}–{focus_age[1]} tuổi ({len(focus_df)} người)"
+            ]
+        )
+
+        fig_od.add_trace(go.Scatter(
+            x=df['Age'], y=df['MonthlyIncome'], mode='markers',
+            marker=dict(color='#d1d5db', size=3, opacity=0.3), showlegend=False
+        ), row=1, col=1)
+        fig_od.add_vrect(
+            x0=focus_age[0], x1=focus_age[1],
+            fillcolor='#f97316', opacity=0.2, line_width=1.5, line_color='#f97316',
+            row=1, col=1
+        )
+
+        fig_od.add_trace(go.Scatter(
+            x=focus_df['Age'], y=focus_df['MonthlyIncome'], mode='markers',
+            marker=dict(
+                color=focus_df['Attrition'].map({'Yes': COLOR_YES, 'No': COLOR_NO}),
+                size=6, opacity=0.85
+            ), showlegend=False
+        ), row=2, col=1)
+
+        fig_od.update_layout(template=PLOTLY_TEMPLATE, height=600)
+        st.plotly_chart(fig_od, use_container_width=True)
 
 # ==========================================
 # 8. PIPELINE
